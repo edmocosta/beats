@@ -20,6 +20,7 @@ package beatconverter
 import (
 	"context"
 	"fmt"
+	"github.com/elastic/beats/v7/libbeat/outputs/logstash"
 
 	"go.opentelemetry.io/collector/confmap"
 
@@ -71,6 +72,38 @@ func (c converter) Convert(_ context.Context, conf *confmap.Conf) error {
 
 		for key, output := range output.ToStringMap() {
 			switch key {
+			case "logstash":
+				outputConfig := config.MustNewConfigFrom(output)
+				// when output.queue is set by user, or it comes from "preset" config, promote it to global level
+				if ok := outputConfig.HasField("queue"); ok {
+					if err := promoteOutputQueueSettings(beatreceiver, outputConfig, conf); err != nil {
+						return err
+					}
+				}
+
+				lsConfig := config.MustNewConfigFrom(logstash.DefaultConfig())
+				err := lsConfig.Merge(outputConfig)
+				if err != nil {
+					return err
+				}
+
+				var otelConfig map[string]any
+				err = lsConfig.Unpack(&otelConfig)
+				if err != nil {
+					return err
+				}
+
+				out = map[string]any{
+					"service::pipelines::logs::exporters": []string{"logstash"},
+					"exporters": map[string]any{
+						"logstash": otelConfig,
+					},
+				}
+
+				err = conf.Merge(confmap.NewFromStringMap(out))
+				if err != nil {
+					return err
+				}
 			case "elasticsearch":
 				esConfig := config.MustNewConfigFrom(output)
 				// we use development logger here as this method is part of dev-only otel command

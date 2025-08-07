@@ -19,6 +19,7 @@ import (
 	"github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
+	"go.opentelemetry.io/collector/client"
 
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
@@ -30,6 +31,8 @@ import (
 const (
 	// esDocumentIDAttribute is the attribute key used to store the document ID in the log record.
 	esDocumentIDAttribute = "elasticsearch.document_id"
+	beatNameCtxKey        = "beat_name"
+	beatVersionCtxtKey    = "beat_version"
 )
 
 func init() {
@@ -163,7 +166,7 @@ func (out *otelConsumer) logsPublish(ctx context.Context, batch publisher.Batch)
 		}
 	}
 
-	err := out.logsConsumer.ConsumeLogs(ctx, pLogs)
+	err := out.logsConsumer.ConsumeLogs(out.newConsumerContext(ctx), pLogs)
 	if err != nil {
 		// Permanent errors shouldn't be retried. This tipically means
 		// the data cannot be serialized by the exporter that is attached
@@ -187,6 +190,19 @@ func (out *otelConsumer) logsPublish(ctx context.Context, batch publisher.Batch)
 	st.NewBatch(len(events))
 	st.AckedEvents(len(events))
 	return nil
+}
+
+// newConsumerContext creates a new context.Context adding the beats metadata
+// to the client.Info. This is used to pass the beat name and version to the
+// Collector, so it can be used by the components to access that data.
+func (out *otelConsumer) newConsumerContext(ctx context.Context) context.Context {
+	clientInfo := client.Info{
+		Metadata: client.NewMetadata(map[string][]string{
+			beatNameCtxKey:     {out.beatInfo.Beat},
+			beatVersionCtxtKey: {out.beatInfo.Version},
+		}),
+	}
+	return client.NewContext(ctx, clientInfo)
 }
 
 func (out *otelConsumer) String() string {

@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Run filebeat (otel mode)" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="beats" />
+    <working_directory value="$PROJECT_DIR$" />
+    <go_parameters value="-tags=otelbeat" />
+    <parameters value="otel run" />
+    <kind value="PACKAGE" />
+    <package value="github.com/elastic/beats/v7/x-pack/filebeat" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/filebeat/main.go" />
+    <method v="2" />
+  </configuration>
+</component>
