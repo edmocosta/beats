@@ -99,6 +99,7 @@ func createLogExporter(ctx context.Context, settings exporter.Settings, cfg comp
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithShutdown(exp.Shutdown),
 		exporterhelper.WithQueueBatch(qs, exporterhelper.NewLogsQueueBatchSettings()),
+		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: lsCfg.Timeout}),
 	)
 }
 
