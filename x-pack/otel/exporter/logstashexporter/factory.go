@@ -6,6 +6,7 @@ package logstashexporter
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/outputs"
@@ -14,8 +15,8 @@ import (
 	"github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -48,6 +49,7 @@ type logstashExporter struct {
 	logger     *logp.Logger
 	workers    map[string][]internal.OutputWorker
 	workerChan chan internal.Work
+	settings   exporter.Settings
 }
 
 func (l *logstashExporter) Shutdown(_ context.Context) error {
@@ -81,15 +83,12 @@ func createLogExporter(ctx context.Context, settings exporter.Settings, cfg comp
 		logger:     logger,
 		workers:    map[string][]internal.OutputWorker{},
 		workerChan: make(chan internal.Work),
+		settings:   settings,
 	}
 
+	// 	Beats (sync) <-> OTel batcher (async) <-> logstash exporter (sync)
 	qs := exporterhelper.NewDefaultQueueConfig()
-	qs.Enabled = false // disabled for now for testing, but should be enabled in the future
-	qs.Batch = configoptional.Some(exporterhelper.BatchConfig{
-		FlushTimeout: 30 * time.Second,
-		MinSize:      0,
-		MaxSize:      int64(lsCfg.BulkMaxSize),
-	})
+	qs.Enabled = false
 
 	return exporterhelper.NewLogs(
 		ctx,
@@ -122,24 +121,37 @@ func (l *logstashExporter) pushLogData(ctx context.Context, ld plog.Logs) error 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-resultChan:
-			if err != nil {
-				return err
+		case <-time.After(l.config.Timeout):
+			return consumererror.NewLogs(errors.New("timeout"), ld)
+		case result := <-resultChan:
+			if result != nil {
+				// TODO: check if the error is really permanent
+				return consumererror.NewLogs(result, ld)
 			}
 			res := batch.Result()
-			if res.Cancelled {
+			switch {
+			case res.Acked:
+				return nil
+			case res.Dropped:
+				return consumererror.NewPermanent(result)
+			case res.Cancelled:
 				l.workerChan <- work
-			} else if res.Retry {
+			case res.Retry:
+				if l.config.MaxRetries > 0 && res.Retries >= l.config.MaxRetries {
+					return consumererror.NewPermanent(errors.New("max retries exceeded"))
+				}
 				l.workerChan <- work
-			} else {
-				return err
+			case res.Split:
+			// TODO: implement split logic if needed. Logstash clients does not call SplitRetry currently
+			default:
+				return consumererror.NewPermanent(result)
 			}
 		}
 	}
 }
 
 func (l *logstashExporter) makeLogstashWorkers(ctx context.Context) error {
-	beatVersion := internal.BeatVersion(ctx)
+	beatVersion := internal.GetBeatVersion(ctx)
 	if _, ok := l.workers[beatVersion]; ok {
 		return nil
 	}

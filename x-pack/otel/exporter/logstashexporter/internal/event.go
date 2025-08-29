@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 )
 
-func FromLogRecord(ctx context.Context, logRecord *plog.LogRecord) (beat.Event, error) {
+func parseEvent(ctx context.Context, logRecord *plog.LogRecord) (beat.Event, error) {
 	metadata := parseEventMetadata(ctx)
 	if !isBeatsEvent(metadata) {
 		return beat.Event{}, consumererror.NewPermanent(errors.New("invalid beats event metadata"))
@@ -37,19 +37,6 @@ func FromLogRecord(ctx context.Context, logRecord *plog.LogRecord) (beat.Event, 
 		Meta:      metadata,
 		Fields:    fields,
 	}, nil
-}
-
-func BeatVersion(ctx context.Context) string {
-	metadata := parseEventMetadata(ctx)
-	if val, ok := metadata["version"]; ok {
-		return val.(string)
-	}
-	return ""
-}
-
-func isBeatsEvent(metadata map[string]any) bool {
-	v, ok := metadata["beat"]
-	return ok && v != nil && v != ""
 }
 
 func parseEventFields(logRecord *plog.LogRecord) (map[string]any, bool) {
@@ -87,4 +74,18 @@ func parseEventMetadata(ctx context.Context) map[string]any {
 		"beat":    beatName,
 		"version": beatVersion,
 	}
+}
+
+func isBeatsEvent(metadata map[string]any) bool {
+	v, ok := metadata["beat"]
+	return ok && v != nil && v != ""
+}
+
+// GetBeatVersion retrieves the version of the beat from the context metadata.
+// If the version is not found, it returns an empty string.
+func GetBeatVersion(ctx context.Context) string {
+	if version, ok := parseEventMetadata(ctx)["version"]; ok {
+		return version.(string)
+	}
+	return ""
 }

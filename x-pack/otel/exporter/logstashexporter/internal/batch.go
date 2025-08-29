@@ -12,18 +12,17 @@ import (
 )
 
 type LogBatchResult struct {
-	Acked       bool
-	Dropped     bool
-	Retry       bool
-	RetryEvents []publisher.Event
-	SplitRetry  bool
-	Cancelled   bool
+	Acked     bool
+	Dropped   bool
+	Retry     bool
+	Split     bool
+	Cancelled bool
+	Retries   int
 }
 
 type LogBatch struct {
-	logs   plog.Logs
-	events []publisher.Event
-	result *LogBatchResult
+	pendingEvents []publisher.Event
+	result        *LogBatchResult
 }
 
 func NewLogBatch(ctx context.Context, logs plog.Logs) (*LogBatch, error) {
@@ -32,9 +31,8 @@ func NewLogBatch(ctx context.Context, logs plog.Logs) (*LogBatch, error) {
 		return nil, err
 	}
 	return &LogBatch{
-		logs:   logs,
-		events: events,
-		result: &LogBatchResult{},
+		pendingEvents: events,
+		result:        &LogBatchResult{},
 	}, nil
 }
 
@@ -43,7 +41,7 @@ func createEvents(ctx context.Context, logs *plog.Logs) ([]publisher.Event, erro
 	for _, rl := range logs.ResourceLogs().All() {
 		for _, sl := range rl.ScopeLogs().All() {
 			for _, lr := range sl.LogRecords().All() {
-				record, err := FromLogRecord(ctx, &lr)
+				record, err := parseEvent(ctx, &lr)
 				if err != nil {
 					return nil, err
 				}
@@ -55,7 +53,7 @@ func createEvents(ctx context.Context, logs *plog.Logs) ([]publisher.Event, erro
 }
 
 func (b *LogBatch) Events() []publisher.Event {
-	return b.events
+	return b.pendingEvents
 }
 
 func (b *LogBatch) ACK() {
@@ -64,27 +62,28 @@ func (b *LogBatch) ACK() {
 
 func (b *LogBatch) Drop() {
 	b.result.Dropped = true
-	b.result.Retry = false
 }
 
 func (b *LogBatch) Retry() {
 	b.result.Retry = true
+	b.result.Retries++
 }
 
 func (b *LogBatch) RetryEvents(events []publisher.Event) {
-	b.result.RetryEvents = events
-	b.result.Retry = true
+	b.pendingEvents = events
+	b.Retry()
 }
 
 func (b *LogBatch) SplitRetry() bool {
-	b.result.SplitRetry = true
-	b.result.Retry = false
+	if len(b.pendingEvents) < 2 {
+		return false
+	}
+	b.result.Split = true
 	return true
 }
 
 func (b *LogBatch) Cancelled() {
 	b.result.Cancelled = true
-	b.result.Retry = false
 }
 
 func (b *LogBatch) Result() *LogBatchResult {
