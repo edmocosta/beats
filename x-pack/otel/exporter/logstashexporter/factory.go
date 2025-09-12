@@ -9,6 +9,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/elastic/beats/v7/libbeat/otelbeat/otelctx"
 	"github.com/elastic/beats/v7/libbeat/outputs"
 	"github.com/elastic/beats/v7/libbeat/outputs/logstash"
 	"github.com/elastic/beats/v7/x-pack/otel/exporter/logstashexporter/internal"
@@ -24,10 +25,10 @@ import (
 
 var (
 	Type              = component.MustNewType("logstash")
-	LogStabilityLevel = component.StabilityLevelBeta
+	LogStabilityLevel = component.StabilityLevelDevelopment
 )
 
-type logstashBeatsConfig struct {
+type logstashOutputConfig struct {
 	outputs.HostWorkerCfg `config:",inline"`
 	logstash.Config       `config:",inline"`
 }
@@ -45,7 +46,8 @@ func createDefaultConfig() component.Config {
 }
 
 type logstashExporter struct {
-	config     *logstashBeatsConfig
+	config     *logstashOutputConfig
+	rawConfig  *config.C
 	logger     *logp.Logger
 	workers    map[string][]internal.OutputWorker
 	workerChan chan internal.Work
@@ -67,7 +69,7 @@ func createLogExporter(ctx context.Context, settings exporter.Settings, cfg comp
 		return nil, err
 	}
 
-	lsCfg := logstashBeatsConfig{}
+	lsCfg := logstashOutputConfig{}
 	err = parsedCfg.Unpack(&lsCfg)
 	if err != nil {
 		return nil, err
@@ -80,6 +82,7 @@ func createLogExporter(ctx context.Context, settings exporter.Settings, cfg comp
 
 	exp := logstashExporter{
 		config:     &lsCfg,
+		rawConfig:  parsedCfg,
 		logger:     logger,
 		workers:    map[string][]internal.OutputWorker{},
 		workerChan: make(chan internal.Work),
@@ -141,8 +144,6 @@ func (l *logstashExporter) pushLogData(ctx context.Context, ld plog.Logs) error 
 					return consumererror.NewPermanent(errors.New("max retries exceeded"))
 				}
 				l.workerChan <- work
-			case res.Split:
-			// TODO: implement split logic if needed. Logstash clients does not call SplitRetry currently
 			default:
 				return consumererror.NewPermanent(result)
 			}
@@ -151,22 +152,8 @@ func (l *logstashExporter) pushLogData(ctx context.Context, ld plog.Logs) error 
 }
 
 func (l *logstashExporter) makeLogstashWorkers(ctx context.Context) error {
-	beatVersion := internal.GetBeatVersion(ctx)
-	if _, ok := l.workers[beatVersion]; ok {
-		return nil
-	}
-
-	hostWorkerConfig, err := config.NewConfigFrom(l.config.HostWorkerCfg)
-	if err != nil {
-		return err
-	}
-
-	hosts, err := outputs.ReadHostList(hostWorkerConfig)
-	if err != nil {
-		return err
-	}
-
-	group, err := logstash.MakeLogstashClients(beatVersion, l.logger, &l.config.Config, hosts, outputs.NewNilObserver())
+	beatVersion := otelctx.GetBeatVersion(ctx)
+	group, err := logstash.MakeLogstashClients(beatVersion, l.logger, outputs.NewNilObserver(), l.rawConfig, "")
 	if err != nil {
 		return err
 	}

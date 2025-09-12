@@ -7,15 +7,15 @@ package internal
 import (
 	"context"
 
-	"github.com/elastic/beats/v7/libbeat/publisher"
 	"go.opentelemetry.io/collector/pdata/plog"
+
+	"github.com/elastic/beats/v7/libbeat/publisher"
 )
 
 type LogBatchResult struct {
 	Acked     bool
 	Dropped   bool
 	Retry     bool
-	Split     bool
 	Cancelled bool
 	Retries   int
 }
@@ -61,6 +61,7 @@ func (b *LogBatch) ACK() {
 }
 
 func (b *LogBatch) Drop() {
+	b.pendingEvents = nil
 	b.result.Dropped = true
 }
 
@@ -74,12 +75,9 @@ func (b *LogBatch) RetryEvents(events []publisher.Event) {
 	b.Retry()
 }
 
+// SplitRetry is not used by Logstash clients currently
 func (b *LogBatch) SplitRetry() bool {
-	if len(b.pendingEvents) < 2 {
-		return false
-	}
-	b.result.Split = true
-	return true
+	return false
 }
 
 func (b *LogBatch) Cancelled() {

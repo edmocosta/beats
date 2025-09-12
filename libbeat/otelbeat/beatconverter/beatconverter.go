@@ -20,12 +20,12 @@ package beatconverter
 import (
 	"context"
 	"fmt"
-	"github.com/elastic/beats/v7/libbeat/outputs/logstash"
 
 	"go.opentelemetry.io/collector/confmap"
 
 	"github.com/elastic/beats/v7/libbeat/cloudid"
 	elasticsearchtranslate "github.com/elastic/beats/v7/libbeat/otelbeat/oteltranslate/outputs/elasticsearch"
+	logstashstranslate "github.com/elastic/beats/v7/libbeat/otelbeat/oteltranslate/outputs/logstash"
 	"github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 )
@@ -73,22 +73,25 @@ func (c converter) Convert(_ context.Context, conf *confmap.Conf) error {
 		for key, output := range output.ToStringMap() {
 			switch key {
 			case "logstash":
-				outputConfig := config.MustNewConfigFrom(output)
-				// when output.queue is set by user, or it comes from "preset" config, promote it to global level
-				if ok := outputConfig.HasField("queue"); ok {
-					if err := promoteOutputQueueSettings(beatreceiver, outputConfig, conf); err != nil {
+				lsOutputConfig := config.MustNewConfigFrom(output)
+
+				// ignore logstash output if it is not enabled
+				if !lsOutputConfig.Enabled() {
+					continue
+				}
+
+				// when output.queue is set by user, promote it to global level
+				if ok := lsOutputConfig.HasField("queue"); ok {
+					if err := promoteOutputQueueSettings(beatreceiver, lsOutputConfig, conf); err != nil {
+						return err
+					}
+					// remove queue from logstash output config
+					if _, err := lsOutputConfig.Remove("queue", -1); err != nil {
 						return err
 					}
 				}
 
-				lsConfig := config.MustNewConfigFrom(logstash.DefaultConfig())
-				err := lsConfig.Merge(outputConfig)
-				if err != nil {
-					return err
-				}
-
-				var otelConfig map[string]any
-				err = lsConfig.Unpack(&otelConfig)
+				lsConfigMap, err := logstashstranslate.ToMap(lsOutputConfig)
 				if err != nil {
 					return err
 				}
@@ -96,14 +99,14 @@ func (c converter) Convert(_ context.Context, conf *confmap.Conf) error {
 				out = map[string]any{
 					"service::pipelines::logs::exporters": []string{"logstash"},
 					"exporters": map[string]any{
-						"logstash": otelConfig,
+						"logstash": lsConfigMap,
 					},
 				}
 
-				err = conf.Merge(confmap.NewFromStringMap(out))
-				if err != nil {
+				if err := conf.Merge(confmap.NewFromStringMap(out)); err != nil {
 					return err
 				}
+
 			case "elasticsearch":
 				esConfig := config.MustNewConfigFrom(output)
 				// we use development logger here as this method is part of dev-only otel command

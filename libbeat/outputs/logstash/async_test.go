@@ -58,7 +58,7 @@ func makeAsyncTestClient(conn *transport.Client) testClientDriver {
 	if err != nil {
 		panic(err)
 	}
-	client, err := newAsyncClient(logger, "", conn, outputs.NewNilObserver(), &config)
+	client, err := newAsyncClient(logger, "beat_version", conn, outputs.NewNilObserver(), &config)
 	if err != nil {
 		panic(err)
 	}
