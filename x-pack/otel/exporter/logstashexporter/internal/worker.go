@@ -1,3 +1,7 @@
+// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+// or more contributor license agreements. Licensed under the Elastic License;
+// you may not use this file except in compliance with the Elastic License.
+
 package internal
 
 import (
@@ -10,24 +14,28 @@ import (
 )
 
 type Work struct {
-	batch      publisher.Batch
-	resultChan chan error
+	batch  publisher.Batch
+	result chan error
 }
 
-func NewWork(batch publisher.Batch, result chan error) Work {
-	return Work{
-		batch:      batch,
-		resultChan: result,
+func NewWork(batch publisher.Batch) *Work {
+	return &Work{
+		batch:  batch,
+		result: make(chan error, 1),
 	}
 }
 
-type worker struct {
-	input  chan Work
-	cancel func()
+func (w *Work) Result() chan error {
+	return w.result
 }
 
-type OutputWorker interface {
+type Worker interface {
 	Close() error
+}
+
+type worker struct {
+	workQueue chan *Work
+	cancel    func()
 }
 
 type clientWorker struct {
@@ -41,24 +49,20 @@ type netClientWorker struct {
 	logger logp.Logger
 }
 
-func MakeClientWorker(qu chan Work, client outputs.Client, logger logp.Logger) OutputWorker {
+func MakeClientWorker(workQueue chan *Work, client outputs.Client, logger logp.Logger) Worker {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := worker{
-		input:  qu,
-		cancel: cancel,
+		workQueue: workQueue,
+		cancel:    cancel,
 	}
 
 	var c interface {
-		OutputWorker
+		Worker
 		run(context.Context)
 	}
 
 	if nc, ok := client.(outputs.NetworkClient); ok {
-		c = &netClientWorker{
-			worker: w,
-			client: nc,
-			logger: logger,
-		}
+		c = &netClientWorker{worker: w, client: nc, logger: logger}
 	} else {
 		c = &clientWorker{worker: w, client: client}
 	}
@@ -72,7 +76,7 @@ func (w *worker) close() {
 }
 
 func (w *clientWorker) Close() error {
-	w.worker.close()
+	w.close()
 	return w.client.Close()
 }
 
@@ -81,18 +85,14 @@ func (w *clientWorker) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case task := <-w.input:
-			if err := w.client.Publish(ctx, task.batch); err != nil {
-				task.resultChan <- err
-				return
-			}
-			task.resultChan <- nil
+		case work := <-w.workQueue:
+			work.result <- w.client.Publish(ctx, work.batch)
 		}
 	}
 }
 
 func (w *netClientWorker) Close() error {
-	w.worker.close()
+	w.close()
 	return w.client.Close()
 }
 
@@ -104,16 +104,13 @@ func (w *netClientWorker) run(ctx context.Context) {
 
 	for {
 		select {
-
 		case <-ctx.Done():
 			return
-
-		case task := <-w.input:
-			// Try to (re)connect so we can publish batch
+		case work := <-w.workQueue:
 			if !connected {
-				// Return batch to other output workers while we try to (re)connect
-				task.batch.Cancelled()
-				task.resultChan <- nil
+				// Return the batch to other workers while it tries to reconnect
+				work.batch.Cancelled()
+				work.result <- nil
 
 				if reconnectAttempts == 0 {
 					w.logger.Infof("Connecting to %v", w.client)
@@ -127,29 +124,27 @@ func (w *netClientWorker) run(ctx context.Context) {
 					w.logger.Infof("Connection to %v established", w.client)
 					reconnectAttempts = 0
 				} else {
-					w.logger.Errorf("Failed to connect to %v: %v", w.client, err)
+					w.logger.Errorf("Failed to connect to %v: %q", w.client, err)
 					reconnectAttempts++
 				}
+
 				continue
 			}
 
-			if err := w.publishBatch(ctx, task.batch); err != nil {
-				task.resultChan <- err
+			if err := w.publishBatch(ctx, work.batch); err != nil {
+				work.result <- err
 				connected = false
 			} else {
-				task.resultChan <- nil
+				work.result <- nil
 			}
 		}
 	}
 }
 
 func (w *netClientWorker) publishBatch(ctx context.Context, batch publisher.Batch) error {
-	err := w.client.Publish(ctx, batch)
+	err := w.client.Publish(context.WithoutCancel(ctx), batch)
 	if err != nil {
 		err = fmt.Errorf("failed to publish events: %w", err)
-		w.logger.Error(err)
-		// on error return to connect loop
-		return err
 	}
-	return nil
+	return err
 }
